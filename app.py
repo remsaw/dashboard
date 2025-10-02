@@ -1,4 +1,15 @@
+import logging
+
+# Reduce Streamlit logger noise when running the script directly with `python app.py`.
+# Recommended way to run the app is `streamlit run app.py` (see notes below).
+logging.getLogger("streamlit").setLevel(logging.ERROR)
+
 import streamlit as st
+import warnings
+
+# Suppress the repeated 'missing ScriptRunContext' warning when running
+# the app directly with `python app.py`. Prefer `streamlit run app.py`.
+warnings.filterwarnings("ignore", message=".*missing ScriptRunContext.*")
 import pandas as pd
 import numpy as np
 import plotly.express as px
@@ -63,8 +74,123 @@ with tab1:
     col3.metric("🔄 Readmission Rate", f"{df['Readmission30Days'].mean()*100:.1f}%")
     col4.metric("⭐ Avg Satisfaction", f"{df['SatisfactionScore'].mean():.1f}/5")
 
-    # Top 5 Diagnoses
-    diag_counts = df['Diagnosis'].value_counts().head(5).reset_index()
+    # Age Distribution & Cost per Diagnosis side-by-side
+    # create age bins for coloring (matches sidebar groups)
+    bins = [0, 18, 30, 50, 70, 200]
+    labels = ['<18', '18-30', '31-50', '51-70', '71+']
+    df['age_bin'] = pd.cut(df['Age'], bins=bins, labels=labels, right=True)
+    # remove categories that have no observations so the legend only shows present bins
+    if hasattr(df['age_bin'], 'cat'):
+        df['age_bin'] = df['age_bin'].cat.remove_unused_categories()
+
+    col_left, col_right = st.columns(2)
+    with col_left:
+        st.markdown("### 🎂 Age Distribution")
+        # Histogram colored by age bins, overlayed with some transparency
+        fig_age = px.histogram(
+            df,
+            x='Age',
+            nbins=20,
+            color='age_bin',
+            barmode='overlay',
+            title="Age Distribution of Patients",
+            labels={'age_bin': 'Age Bin'},
+            color_discrete_sequence=px.colors.qualitative.Set2
+        )
+        fig_age.update_traces(opacity=0.75)
+
+        # Compute counts and percentages per age bin and attach to hovertemplate
+        counts_by_bin = df['age_bin'].value_counts().to_dict()
+        total_n = len(df)
+        perc_by_bin = {k: (v / total_n * 100) for k, v in counts_by_bin.items()}
+        for trace in fig_age.data:
+            # trace.name contains the age_bin label for that trace
+            total = counts_by_bin.get(trace.name, 0)
+            percent = perc_by_bin.get(trace.name, 0.0)
+            # show the age value (x), count for that bar (y), and total & percent for that age bin
+            trace.hovertemplate = (
+                f"Age: %{{x}}<br>Count: %{{y}}<br>Total in {trace.name}: {total} ({percent:.1f}%)<extra></extra>"
+            )
+
+        # Interactive selection: prefer plotly click events when streamlit_plotly_events is installed
+        selected_bins = []
+        # Detect optional streamlit_plotly_events at runtime and provide a safe fallback
+        try:
+            import importlib
+            if importlib.util.find_spec("streamlit_plotly_events") is not None:
+                from streamlit_plotly_events import plotly_events  # type: ignore
+            else:
+                plotly_events = None
+        except Exception:
+            plotly_events = None
+
+        if plotly_events is not None:
+            try:
+                # plotly_events renders the figure and returns click events
+                events = plotly_events(fig_age, click_event=True, key='age_plot')
+                if events:
+                    for ev in events:
+                        curve = ev.get('curveNumber')
+                        if curve is not None and curve < len(fig_age.data):
+                            name = fig_age.data[curve].name
+                            if name not in selected_bins:
+                                selected_bins.append(name)
+                # maintain selection in session state
+                if 'selected_age_bins' not in st.session_state:
+                    st.session_state['selected_age_bins'] = []
+                if selected_bins:
+                    st.session_state['selected_age_bins'] = selected_bins
+                if st.button("Clear age selection", key='clear_age_sel'):
+                    st.session_state['selected_age_bins'] = []
+            except Exception:
+                # If something goes wrong with the optional integration, fall back to static rendering
+                plotly_events = None
+
+        if plotly_events is None:
+            # fallback: show the static figure and provide a multiselect to filter
+            st.plotly_chart(fig_age, use_container_width=True)
+            options = list(df['age_bin'].cat.categories)
+            sel = st.multiselect("Select age bins to filter other charts", options=options, default=st.session_state.get('selected_age_bins', []))
+            st.session_state['selected_age_bins'] = sel
+
+        # Small summary box with mean and median and per-bin counts and percentages
+        mean_age = df['Age'].mean()
+        median_age = df['Age'].median()
+        summary_lines = [f"**Mean Age:** {mean_age:.1f}", f"**Median Age:** {median_age:.1f}", "\n**Counts by Age Bin:**"]
+        for lab in labels:
+            if lab in counts_by_bin:
+                pct = perc_by_bin.get(lab, 0.0)
+                summary_lines.append(f"- {lab}: {counts_by_bin[lab]} ({pct:.1f}%)")
+        st.info('\n'.join(summary_lines))
+
+    # apply selected age bins to filter the right-hand charts and downstream visuals
+    selected = st.session_state.get('selected_age_bins', []) if 'selected_age_bins' in st.session_state else []
+    if selected:
+        df_sel = df[df['age_bin'].isin(selected)]
+    else:
+        df_sel = df
+
+    with col_right:
+        st.markdown("### 💰 Average Treatment Cost per Diagnosis")
+        cost_per_diag = df_sel.groupby('Diagnosis')['TreatmentCost'].mean().sort_values(ascending=False).reset_index()
+        # Horizontal bar with annotated average cost values
+        fig_cost = px.bar(
+            cost_per_diag,
+            x='TreatmentCost',
+            y='Diagnosis',
+            orientation='h',
+            title="Average Treatment Cost per Diagnosis",
+            labels={'TreatmentCost': 'Avg Cost (USD)'},
+            color_discrete_sequence=["#F0E442"],
+            text='TreatmentCost'
+        )
+        # Format text labels and move them outside bars for readability
+        fig_cost.update_traces(texttemplate='$%{text:.0f}', textposition='outside')
+        fig_cost.update_layout(margin=dict(l=0, r=150))
+        st.plotly_chart(fig_cost, use_container_width=True)
+
+    # Top 5 Diagnoses (respecting selected age bins)
+    diag_counts = df_sel['Diagnosis'].value_counts().head(5).reset_index()
     diag_counts.columns = ["Diagnosis", "Count"]
     fig_diag = px.bar(diag_counts, x="Count", y="Diagnosis", orientation='h',
                       title="Top 5 Diagnoses by Patient Count",
@@ -73,7 +199,7 @@ with tab1:
 
     # Vital Signs: Top 5 Diagnoses Only
     top5_diag = diag_counts['Diagnosis'].tolist()
-    sample_df = df[df['Diagnosis'].isin(top5_diag)].sample(n=min(1000, len(df)), random_state=42)
+    sample_df = df_sel[df_sel['Diagnosis'].isin(top5_diag)].sample(n=min(1000, len(df_sel)), random_state=42)
     colA, colB = st.columns(2)
     with colA:
         fig_bp = px.box(sample_df, x='Diagnosis', y='BloodPressure_Sys', 
