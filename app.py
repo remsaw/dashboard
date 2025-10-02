@@ -54,79 +54,90 @@ df = df[df['HospitalDept'].isin(dept_filter)]
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Descriptive", "🔍 Inferential", "🤖 Predictive", "📋 Data"])
 
 # ----------------------------
-# TAB 1: Descriptive Analytics
+# TAB 1: Descriptive Analytics (Top 5 Only)
 # ----------------------------
 with tab1:
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("👥 Total Patients", len(df))
+    col1.metric("👥 Total Patients", f"{len(df):,}")
     col2.metric("🎂 Avg Age", f"{df['Age'].mean():.1f}")
     col3.metric("🔄 Readmission Rate", f"{df['Readmission30Days'].mean()*100:.1f}%")
     col4.metric("⭐ Avg Satisfaction", f"{df['SatisfactionScore'].mean():.1f}/5")
 
-    # Admissions Over Time (patched: convert Period to str)
-    if "AdmissionDate" in df.columns:
-        admissions = df.groupby(df['AdmissionDate'].dt.to_period("M")).size()
-        admissions.index = admissions.index.astype(str)
-        admissions = admissions.reset_index()
-        admissions.columns = ["Month", "Admissions"]
-        fig_time = px.line(admissions, x="Month", y="Admissions", title="Monthly Admissions")
-        st.plotly_chart(fig_time, use_container_width=True)
-
-    # Diagnosis Distribution (reset index)
-    diag_counts = df['Diagnosis'].value_counts().head(10).reset_index()
+    # Top 5 Diagnoses
+    diag_counts = df['Diagnosis'].value_counts().head(5).reset_index()
     diag_counts.columns = ["Diagnosis", "Count"]
-    fig_diag = px.pie(diag_counts, values="Count", names="Diagnosis", title="Top Diagnoses by Count")
+    fig_diag = px.bar(diag_counts, x="Count", y="Diagnosis", orientation='h',
+                      title="Top 5 Diagnoses by Patient Count",
+                      color_discrete_sequence=["#0072B2"])
     st.plotly_chart(fig_diag, use_container_width=True)
 
-    # Vital Signs (downsample for performance)
-    sample_df = df.sample(n=min(2000, len(df)), random_state=42).reset_index(drop=True)
+    # Vital Signs: Top 5 Diagnoses Only
+    top5_diag = diag_counts['Diagnosis'].tolist()
+    sample_df = df[df['Diagnosis'].isin(top5_diag)].sample(n=min(1000, len(df)), random_state=42)
     colA, colB = st.columns(2)
     with colA:
-        fig_bp = px.box(sample_df, x='Diagnosis', y='BloodPressure_Sys', title="Systolic BP by Diagnosis")
+        fig_bp = px.box(sample_df, x='Diagnosis', y='BloodPressure_Sys', 
+                        title="Systolic BP: Top 5 Diagnoses")
         st.plotly_chart(fig_bp, use_container_width=True)
     with colB:
-        fig_gluc = px.box(sample_df, x='Diagnosis', y='Glucose', title="Glucose Level by Diagnosis")
+        fig_gluc = px.box(sample_df, x='Diagnosis', y='Glucose', 
+                          title="Glucose Level: Top 5 Diagnoses")
         st.plotly_chart(fig_gluc, use_container_width=True)
 
-    # Operational Metrics (downsample for speed, reset index)
-    scatter_df = df.sample(n=min(2000, len(df)), random_state=7).reset_index(drop=True)
-    fig_wait = px.scatter(scatter_df, x='WaitTime', y='SatisfactionScore', color='Diagnosis',
-                          title="Wait Time vs Satisfaction")
+    # Operational: Top 5 Departments
+    dept_wait = df.groupby('HospitalDept').agg(
+        AvgWait=('WaitTime', 'mean'),
+        Count=('PatientID', 'count')
+    ).reset_index().sort_values('AvgWait', ascending=False).head(5)
+    fig_wait = px.bar(dept_wait, x='AvgWait', y='HospitalDept', orientation='h',
+                      title="Top 5 Departments by Average Wait Time (Minutes)",
+                      color_discrete_sequence=["#D55E00"])
     st.plotly_chart(fig_wait, use_container_width=True)
 
 # ----------------------------
-# TAB 2: Inferential Analytics
+# TAB 2: Inferential Analytics (Top Insights Only)
 # ----------------------------
 with tab2:
+    st.subheader("🔍 Key Statistical Insights (Top Findings)")
+
+    # Correlation: Top 5 strongest (absolute)
     num_cols = ['Age', 'BMI', 'BloodPressure_Sys', 'Cholesterol', 'Glucose',
                 'WaitTime', 'VisitDuration', 'TreatmentCost', 'SatisfactionScore']
-    corr = df[num_cols].corr().reset_index(drop=True)
-    fig_corr = px.imshow(df[num_cols].corr(), text_auto=True, aspect="auto", title="Feature Correlation Matrix")
-    st.plotly_chart(fig_corr, use_container_width=True)
+    corr = df[num_cols].corr()
+    corr_unstack = corr.where(np.triu(np.ones(corr.shape), k=1).astype(bool)).unstack().dropna()
+    corr_unstack = corr_unstack.abs().sort_values(ascending=False).head(5)
+    st.write("**Top 5 Strongest Correlations:**")
+    for (var1, var2), val in corr_unstack.items():
+        st.write(f"- **{var1} ↔ {var2}**: {val:.2f}")
 
-    st.write("🔹 **Chi-square Test**: Is smoking associated with diagnosis?")
+    # Chi-square: Smoking vs Diagnosis
+    st.markdown("### 🚬 Smoking & Diagnosis Association")
     contingency = pd.crosstab(df['Smoker'], df['Diagnosis'])
     chi2, p, _, _ = chi2_contingency(contingency)
-    st.info(f"p-value = {p:.4f} → {'Significant' if p < 0.05 else 'Not significant'}")
+    st.info(f"**Chi-square p-value = {p:.4f}** → {'Significant association' if p < 0.05 else 'No significant association'}")
 
-    # T-test (safe handling)
-    if 'Hypertension' in df['Diagnosis'].values and 'Diabetes' in df['Diagnosis'].values:
-        bmi_hyp = df[df['Diagnosis'] == 'Hypertension']['BMI']
-        bmi_diab = df[df['Diagnosis'] == 'Diabetes']['BMI']
-        if len(bmi_hyp) > 1 and len(bmi_diab) > 1:
-            t_stat, p_t = ttest_ind(bmi_hyp, bmi_diab, equal_var=False)
-            st.info(f"🔹 **T-test**: BMI (Hypertension vs Diabetes) → p = {p_t:.4f}")
+    # T-test: BMI by Condition (Top 2 conditions with highest BMI)
+    st.markdown("### ⚖️ BMI Comparison: Highest vs Lowest Average")
+    bmi_by_diag = df.groupby('Diagnosis')['BMI'].mean().sort_values(ascending=False)
+    if len(bmi_by_diag) >= 2:
+        high_diag = bmi_by_diag.index[0]
+        low_diag = bmi_by_diag.index[-1]
+        bmi_high = df[df['Diagnosis'] == high_diag]['BMI']
+        bmi_low = df[df['Diagnosis'] == low_diag]['BMI']
+        if len(bmi_high) > 1 and len(bmi_low) > 1:
+            t_stat, p_t = ttest_ind(bmi_high, bmi_low, equal_var=False)
+            st.info(f"**T-test: {high_diag} vs {low_diag} → p = {p_t:.4f}**")
 
-    # Medication Adherence (reset index)
-    adherence_readmit = df.groupby('MedicationAdherence')['Readmission30Days'].mean().reset_index()
-    adherence_readmit['MedicationAdherence'] = adherence_readmit['MedicationAdherence'].astype(str)
+    # Medication Adherence: Top 5 groups by readmission
+    adherence_readmit = df.groupby('MedicationAdherence')['Readmission30Days'].mean().sort_values(ascending=False).head(5).reset_index()
     fig_adh = px.bar(adherence_readmit, x='MedicationAdherence', y='Readmission30Days',
-                     title="Readmission Rate by Medication Adherence",
-                     labels={'Readmission30Days': 'Readmission Rate'})
+                     title="Top 5 Medication Adherence Levels by Readmission Rate",
+                     labels={'Readmission30Days': 'Readmission Rate'},
+                     color_discrete_sequence=["#009E73"])
     st.plotly_chart(fig_adh, use_container_width=True)
 
 # ----------------------------
-# TAB 3: Predictive Analytics
+# TAB 3: Predictive Analytics (Top 5 Features & Risks)
 # ----------------------------
 with tab3:
     df_model = df.copy()
@@ -152,7 +163,7 @@ with tab3:
         st.text("📋 Model Performance (Test Set):")
         st.text(classification_report(y_test, y_pred, zero_division=0))
 
-        # ROC curve (safe arrays)
+        # ROC Curve
         y_prob = model.predict_proba(X_test)[:, 1]
         fpr, tpr, _ = roc_curve(y_test, y_prob)
         roc_auc = auc(fpr, tpr)
@@ -161,51 +172,32 @@ with tab3:
                           labels=dict(FPR='False Positive Rate', TPR='True Positive Rate'))
         st.plotly_chart(fig_roc, use_container_width=True)
 
-        # Feature importance (reset index)
-        importances = pd.Series(model.feature_importances_, index=X.columns).sort_values(ascending=False)[:10]
+        # Top 5 Feature Importance
+        importances = pd.Series(model.feature_importances_, index=X.columns).sort_values(ascending=False)[:5]
         importances = importances.reset_index()
         importances.columns = ["Feature", "Importance"]
         fig_imp = px.bar(importances, x="Importance", y="Feature", orientation='h',
-                         title="Top 10 Predictors of Readmission")
+                         title="Top 5 Predictors of 30-Day Readmission")
         st.plotly_chart(fig_imp, use_container_width=True)
 
-        # High-risk patients
+        # Top 5 High-Risk Patients
         df['ReadmissionRisk'] = model.predict_proba(X)[:, 1]
-        df['RiskGroup'] = pd.cut(df['ReadmissionRisk'], bins=[0,0.33,0.66,1], labels=["Low","Medium","High"])
-        st.subheader("⚠️ High-Risk Patients (Top 10)")
-        st.dataframe(df[['PatientID', 'Diagnosis', 'ReadmissionRisk','RiskGroup']].sort_values('ReadmissionRisk', ascending=False).head(10))
+        st.subheader("⚠️ Top 5 Highest-Risk Patients")
+        st.dataframe(df[['PatientID', 'Diagnosis', 'ReadmissionRisk']].sort_values('ReadmissionRisk', ascending=False).head(5))
 
 # ----------------------------
-# TAB 4: Data (with pagination & search)
+# TAB 4: Data (Top 5 Rows by Default)
 # ----------------------------
 with tab4:
-    st.subheader("📋 Raw Patient Data (Filtered)")
+    st.subheader("📋 Sample Patient Data (Top 5 Rows)")
+    st.dataframe(df.head(5))
 
-    # Search (safe string conversion)
-    search_term = st.text_input("🔎 Search (PatientID, Diagnosis, Department):", "")
-    df_filtered = df.copy()
-    if search_term:
-        df_filtered = df_filtered[
-            df_filtered.astype(str).apply(lambda row: row.str.contains(search_term, case=False)).any(axis=1)
-        ]
-
-    # Pagination
-    page_size = st.selectbox("Rows per page:", [50, 100, 200, 500], index=1)
-    total_rows = len(df_filtered)
-    total_pages = (total_rows // page_size) + (1 if total_rows % page_size else 0)
-    page_number = st.number_input("Page", min_value=1, max_value=max(total_pages, 1), value=1)
-    start_idx = (page_number - 1) * page_size
-    end_idx = start_idx + page_size
-
-    st.write(f"Showing rows {start_idx+1}–{min(end_idx, total_rows)} of {total_rows}")
-    st.dataframe(df_filtered.iloc[start_idx:end_idx])
-
-    # Download full filtered dataset
-    csv = df_filtered.to_csv(index=False).encode("utf-8")
-    st.download_button("⬇️ Download Filtered Data as CSV", csv, "filtered_data.csv", "text/csv")
+    # Full data download
+    csv = df.to_csv(index=False).encode("utf-8")
+    st.download_button("⬇️ Download Full Filtered Data as CSV", csv, "filtered_data.csv", "text/csv")
 
 # ----------------------------
 # Footer
 # ----------------------------
 st.markdown("---")
-st.caption("💡 Dashboard built with Streamlit | Optimized & serialization-proof")
+st.caption("💡 Dashboard built with Streamlit | Showing top 5 insights for clarity and actionability")
