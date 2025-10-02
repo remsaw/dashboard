@@ -63,19 +63,23 @@ with tab1:
     col3.metric("🔄 Readmission Rate", f"{df['Readmission30Days'].mean()*100:.1f}%")
     col4.metric("⭐ Avg Satisfaction", f"{df['SatisfactionScore'].mean():.1f}/5")
 
-    # Admissions Over Time
+    # Admissions Over Time (patched: convert Period to str)
     if "AdmissionDate" in df.columns:
         admissions = df.groupby(df['AdmissionDate'].dt.to_period("M")).size()
-        fig_time = px.line(admissions, title="Monthly Admissions")
+        admissions.index = admissions.index.astype(str)
+        admissions = admissions.reset_index()
+        admissions.columns = ["Month", "Admissions"]
+        fig_time = px.line(admissions, x="Month", y="Admissions", title="Monthly Admissions")
         st.plotly_chart(fig_time, use_container_width=True)
 
-    # Diagnosis Distribution
-    diag_counts = df['Diagnosis'].value_counts().head(10)
-    fig_diag = px.pie(values=diag_counts.values, names=diag_counts.index, title="Top Diagnoses by Count")
+    # Diagnosis Distribution (reset index)
+    diag_counts = df['Diagnosis'].value_counts().head(10).reset_index()
+    diag_counts.columns = ["Diagnosis", "Count"]
+    fig_diag = px.pie(diag_counts, values="Count", names="Diagnosis", title="Top Diagnoses by Count")
     st.plotly_chart(fig_diag, use_container_width=True)
 
-    # Vital Signs (downsample)
-    sample_df = df.sample(n=min(2000, len(df)), random_state=42)
+    # Vital Signs (downsample for performance)
+    sample_df = df.sample(n=min(2000, len(df)), random_state=42).reset_index(drop=True)
     colA, colB = st.columns(2)
     with colA:
         fig_bp = px.box(sample_df, x='Diagnosis', y='BloodPressure_Sys', title="Systolic BP by Diagnosis")
@@ -84,8 +88,8 @@ with tab1:
         fig_gluc = px.box(sample_df, x='Diagnosis', y='Glucose', title="Glucose Level by Diagnosis")
         st.plotly_chart(fig_gluc, use_container_width=True)
 
-    # Operational Metrics (scatter downsampled)
-    scatter_df = df.sample(n=min(2000, len(df)), random_state=7)
+    # Operational Metrics (downsample for speed, reset index)
+    scatter_df = df.sample(n=min(2000, len(df)), random_state=7).reset_index(drop=True)
     fig_wait = px.scatter(scatter_df, x='WaitTime', y='SatisfactionScore', color='Diagnosis',
                           title="Wait Time vs Satisfaction")
     st.plotly_chart(fig_wait, use_container_width=True)
@@ -96,8 +100,8 @@ with tab1:
 with tab2:
     num_cols = ['Age', 'BMI', 'BloodPressure_Sys', 'Cholesterol', 'Glucose',
                 'WaitTime', 'VisitDuration', 'TreatmentCost', 'SatisfactionScore']
-    corr = df[num_cols].corr()
-    fig_corr = px.imshow(corr, text_auto=True, aspect="auto", title="Feature Correlation Matrix")
+    corr = df[num_cols].corr().reset_index(drop=True)
+    fig_corr = px.imshow(df[num_cols].corr(), text_auto=True, aspect="auto", title="Feature Correlation Matrix")
     st.plotly_chart(fig_corr, use_container_width=True)
 
     st.write("🔹 **Chi-square Test**: Is smoking associated with diagnosis?")
@@ -105,13 +109,17 @@ with tab2:
     chi2, p, _, _ = chi2_contingency(contingency)
     st.info(f"p-value = {p:.4f} → {'Significant' if p < 0.05 else 'Not significant'}")
 
+    # T-test (safe handling)
     if 'Hypertension' in df['Diagnosis'].values and 'Diabetes' in df['Diagnosis'].values:
         bmi_hyp = df[df['Diagnosis'] == 'Hypertension']['BMI']
         bmi_diab = df[df['Diagnosis'] == 'Diabetes']['BMI']
-        t_stat, p_t = ttest_ind(bmi_hyp, bmi_diab, equal_var=False)
-        st.info(f"🔹 **T-test**: BMI (Hypertension vs Diabetes) → p = {p_t:.4f}")
+        if len(bmi_hyp) > 1 and len(bmi_diab) > 1:
+            t_stat, p_t = ttest_ind(bmi_hyp, bmi_diab, equal_var=False)
+            st.info(f"🔹 **T-test**: BMI (Hypertension vs Diabetes) → p = {p_t:.4f}")
 
+    # Medication Adherence (reset index)
     adherence_readmit = df.groupby('MedicationAdherence')['Readmission30Days'].mean().reset_index()
+    adherence_readmit['MedicationAdherence'] = adherence_readmit['MedicationAdherence'].astype(str)
     fig_adh = px.bar(adherence_readmit, x='MedicationAdherence', y='Readmission30Days',
                      title="Readmission Rate by Medication Adherence",
                      labels={'Readmission30Days': 'Readmission Rate'})
@@ -144,17 +152,24 @@ with tab3:
         st.text("📋 Model Performance (Test Set):")
         st.text(classification_report(y_test, y_pred, zero_division=0))
 
-        y_prob = model.predict_proba(X_test)[:,1]
+        # ROC curve (safe arrays)
+        y_prob = model.predict_proba(X_test)[:, 1]
         fpr, tpr, _ = roc_curve(y_test, y_prob)
         roc_auc = auc(fpr, tpr)
-        fig_roc = px.area(x=fpr, y=tpr, title=f"ROC Curve (AUC={roc_auc:.2f})",
-                          labels=dict(x='False Positive Rate', y='True Positive Rate'))
+        roc_data = pd.DataFrame({"FPR": fpr, "TPR": tpr})
+        fig_roc = px.area(roc_data, x="FPR", y="TPR", title=f"ROC Curve (AUC={roc_auc:.2f})",
+                          labels=dict(FPR='False Positive Rate', TPR='True Positive Rate'))
         st.plotly_chart(fig_roc, use_container_width=True)
 
+        # Feature importance (reset index)
         importances = pd.Series(model.feature_importances_, index=X.columns).sort_values(ascending=False)[:10]
-        fig_imp = px.bar(importances, orientation='h', title="Top 10 Predictors of Readmission")
+        importances = importances.reset_index()
+        importances.columns = ["Feature", "Importance"]
+        fig_imp = px.bar(importances, x="Importance", y="Feature", orientation='h',
+                         title="Top 10 Predictors of Readmission")
         st.plotly_chart(fig_imp, use_container_width=True)
 
+        # High-risk patients
         df['ReadmissionRisk'] = model.predict_proba(X)[:, 1]
         df['RiskGroup'] = pd.cut(df['ReadmissionRisk'], bins=[0,0.33,0.66,1], labels=["Low","Medium","High"])
         st.subheader("⚠️ High-Risk Patients (Top 10)")
@@ -166,7 +181,7 @@ with tab3:
 with tab4:
     st.subheader("📋 Raw Patient Data (Filtered)")
 
-    # Search
+    # Search (safe string conversion)
     search_term = st.text_input("🔎 Search (PatientID, Diagnosis, Department):", "")
     df_filtered = df.copy()
     if search_term:
@@ -185,7 +200,7 @@ with tab4:
     st.write(f"Showing rows {start_idx+1}–{min(end_idx, total_rows)} of {total_rows}")
     st.dataframe(df_filtered.iloc[start_idx:end_idx])
 
-    # Download
+    # Download full filtered dataset
     csv = df_filtered.to_csv(index=False).encode("utf-8")
     st.download_button("⬇️ Download Filtered Data as CSV", csv, "filtered_data.csv", "text/csv")
 
@@ -193,4 +208,4 @@ with tab4:
 # Footer
 # ----------------------------
 st.markdown("---")
-st.caption("💡 Dashboard built with Streamlit | Optimized for 10,000 records")
+st.caption("💡 Dashboard built with Streamlit | Optimized & serialization-proof")
