@@ -84,7 +84,7 @@ with tab1:
                           title="Glucose Level: Top 5 Diagnoses")
         st.plotly_chart(fig_gluc, use_container_width=True)
 
-    # Operational: Top 5 Departments
+    # Top 5 Departments by Wait Time
     dept_wait = df.groupby('HospitalDept').agg(
         AvgWait=('WaitTime', 'mean'),
         Count=('PatientID', 'count')
@@ -98,9 +98,9 @@ with tab1:
 # TAB 2: Inferential Analytics (Top Insights Only)
 # ----------------------------
 with tab2:
-    st.subheader("🔍 Key Statistical Insights (Top Findings)")
+    st.subheader("🔍 Key Statistical Insights")
 
-    # Correlation: Top 5 strongest (absolute)
+    # Top 5 Correlations
     num_cols = ['Age', 'BMI', 'BloodPressure_Sys', 'Cholesterol', 'Glucose',
                 'WaitTime', 'VisitDuration', 'TreatmentCost', 'SatisfactionScore']
     corr = df[num_cols].corr()
@@ -116,8 +116,7 @@ with tab2:
     chi2, p, _, _ = chi2_contingency(contingency)
     st.info(f"**Chi-square p-value = {p:.4f}** → {'Significant association' if p < 0.05 else 'No significant association'}")
 
-    # T-test: BMI by Condition (Top 2 conditions with highest BMI)
-    st.markdown("### ⚖️ BMI Comparison: Highest vs Lowest Average")
+    # T-test: Highest vs Lowest BMI diagnosis
     bmi_by_diag = df.groupby('Diagnosis')['BMI'].mean().sort_values(ascending=False)
     if len(bmi_by_diag) >= 2:
         high_diag = bmi_by_diag.index[0]
@@ -128,7 +127,7 @@ with tab2:
             t_stat, p_t = ttest_ind(bmi_high, bmi_low, equal_var=False)
             st.info(f"**T-test: {high_diag} vs {low_diag} → p = {p_t:.4f}**")
 
-    # Medication Adherence: Top 5 groups by readmission
+    # Top 5 Medication Adherence by Readmission
     adherence_readmit = df.groupby('MedicationAdherence')['Readmission30Days'].mean().sort_values(ascending=False).head(5).reset_index()
     fig_adh = px.bar(adherence_readmit, x='MedicationAdherence', y='Readmission30Days',
                      title="Top 5 Medication Adherence Levels by Readmission Rate",
@@ -186,7 +185,7 @@ with tab3:
         st.dataframe(df[['PatientID', 'Diagnosis', 'ReadmissionRisk']].sort_values('ReadmissionRisk', ascending=False).head(5))
 
 # ----------------------------
-# TAB 4: Data (Top 5 Rows by Default)
+# TAB 4: Data (Top 5 Rows)
 # ----------------------------
 with tab4:
     st.subheader("📋 Sample Patient Data (Top 5 Rows)")
